@@ -29,13 +29,13 @@ Pitchly is a powerful, real-time audio analysis library that provides comprehens
 Install Pitchly using UV (recommended):
 
 ```bash
-uv add pitchly
+uv add git+https://github.com/henrique-coder/pitchly@main
 ```
 
 Or using pip:
 
 ```bash
-pip install pitchly
+pip install git+https://github.com/henrique-coder/pitchly@main
 ```
 
 ### Development Installation
