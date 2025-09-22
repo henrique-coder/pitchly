@@ -137,15 +137,15 @@ def _safe_array(array, default_value: float = 0.0) -> list[float]:
 
 
 class PitchlyDetector:
-    def __init__(self, sample_rate: int = 44100, buffer_duration: float = 1.0, hop_length: int = 1024) -> None:
+    def __init__(self, sample_rate: int = 48000, buffer_duration: float = 0.1, hop_length: int = 512) -> None:
         self._sample_rate = sample_rate
         self._hop_length = hop_length
         self._buffer_samples = int(buffer_duration * sample_rate)
-        self._fft_size = 2048
+        self._fft_size = 1024
 
         self._aubio_pitch = pitch("yin", self._fft_size, self._hop_length, self._sample_rate)
         self._aubio_pitch.set_unit("Hz")
-        self._aubio_pitch.set_tolerance(0.85)
+        self._aubio_pitch.set_tolerance(0.8)
 
         self._aubio_onset = onset("default", self._fft_size, self._hop_length, self._sample_rate)
         self._aubio_tempo = tempo("default", self._fft_size, self._hop_length, self._sample_rate)
