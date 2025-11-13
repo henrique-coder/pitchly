@@ -1,9 +1,25 @@
-# Standard modules
 from importlib.metadata import version
 
-# Local modules
-from .core import AudioDetection, EnvelopeFeatures, HarmonicFeatures, PitchlyDetector, SpectralFeatures, TimbreFeatures
+from pitchly.config import PitchlyConfig
+from pitchly.detector import PitchlyDetector
+from pitchly.types import (
+    AudioDetection,
+    EnvelopeFeatures,
+    FeatureFlags,
+    HarmonicFeatures,
+    SpectralFeatures,
+    TimbreFeatures,
+)
 
 
 __version__: str = version("pitchly")
-__all__ = ["AudioDetection", "EnvelopeFeatures", "HarmonicFeatures", "PitchlyDetector", "SpectralFeatures", "TimbreFeatures"]
+__all__: list[str] = [
+    "PitchlyDetector",
+    "PitchlyConfig",
+    "FeatureFlags",
+    "AudioDetection",
+    "SpectralFeatures",
+    "HarmonicFeatures",
+    "EnvelopeFeatures",
+    "TimbreFeatures",
+]
