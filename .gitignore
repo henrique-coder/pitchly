@@ -6,10 +6,9 @@
 __pycache__
 .ruff_cache
 .pytest_cache
-node_modules
 
 # Directories
-.old
+.debug
 
 # Files
 example.py
