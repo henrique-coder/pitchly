@@ -1,10 +1,10 @@
 [project]
 name = "pitchly"
 version = "0.1.1"
-description = "Low latency real-time audio quality detection and analysis library"
+description = "Low latency real-time audio quality detection with configurable features"
 readme = "README.md"
 license = "MIT"
-keywords = ["audio", "real-time", "quality-detection", "low-latency", "noise-detection", "signal-analysis"]
+keywords = ["audio", "real-time", "quality-detection", "low-latency", "pitch-detection", "signal-analysis", "frequency-analysis"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -20,7 +20,6 @@ authors = [
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "aubio",
-    "blessed>=1.23.0",
     "librosa>=0.11.0",
     "numba>=0.62.1",
     "numpy>=2.3.4",
