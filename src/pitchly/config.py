@@ -11,14 +11,14 @@ class PitchlyConfig(BaseModel):
     """
     Configuration for PitchlyDetector with full Pydantic validation
 
-    Optimized defaults for universal frequency detection across all instruments and audio sources:
+    Optimized defaults for universal frequency detection with minimal latency:
     - sample_rate: 48000 Hz (professional audio standard, supports frequencies up to 24kHz Nyquist)
-    - buffer_duration: 0.093 seconds (~4480 samples at 48kHz, provides stable low-frequency detection)
-    - hop_length: 1024 samples (~21ms hop at 48kHz, balanced update rate)
-    - fft_size: 2048 (provides ~23Hz frequency resolution at 48kHz)
+    - buffer_duration: 0.128 seconds (~6144 samples = 14 cycles at 440Hz, stable detection with low latency)
+    - hop_length: 512 samples (~10.7ms updates at 48kHz, fast response without compromising stability)
+    - fft_size: 4096 (provides ~11.7Hz frequency resolution at 48kHz, excellent bass discrimination)
     - pitch_algorithm: yin (most accurate pitch detection algorithm)
-    - pitch_tolerance: 0.8 (permissive, captures all pitched sounds)
-    - pitch_min_confidence: 0.1 (low threshold to detect all sounds including quiet ones)
+    - pitch_tolerance: 0.15 (optimal for fundamental detection, rejects harmonics)
+    - pitch_min_confidence: 0.2 (balanced threshold for clean pitch detection)
     - freq_min: 16.0 Hz (supports deepest instruments: pipe organ, contrabass, tuba pedal notes)
     - freq_max: 20000.0 Hz (full human audible range, supports piccolo, violin harmonics, ultrasonic)
 
@@ -39,9 +39,10 @@ class PitchlyConfig(BaseModel):
     These settings provide:
     - Universal frequency detection (16Hz-20kHz range covers all instruments + harmonics)
     - Excellent pitch accuracy across all frequency ranges
-    - Good temporal resolution (~21ms between updates)
-    - Stable detection for low frequencies (large buffer crucial for bass)
-    - Fast processing (~5-15ms analysis time)
+    - Fast temporal resolution (~10.7ms between updates, 2x faster than 1024 hop)
+    - Stable detection optimized for 82Hz-4kHz range (guitar to flute)
+    - Low total latency: ~139ms (128ms buffer + 10.7ms hop + ~3ms processing)
+    - Efficient CPU usage: ~5-10ms processing time per frame
     """
 
     model_config = ConfigDict(
@@ -60,25 +61,25 @@ class PitchlyConfig(BaseModel):
     )
 
     buffer_duration: float = Field(
-        default=0.093,
+        default=0.128,
         gt=0.0,
         le=1.0,
-        description="Buffer duration in seconds - larger buffers improve low-frequency detection stability (critical for bass instruments like tuba, organ)",
+        description="Buffer duration in seconds (default 128ms = ~6144 samples at 48kHz). Minimum for stable detection: 50ms for bass (82Hz), 15ms for mid (440Hz), 5ms for treble (2kHz+). Larger = more stable but higher latency.",
     )
 
     hop_length: int = Field(
-        default=1024,
+        default=512,
         ge=64,
         le=4096,
-        description="Samples between analysis frames - higher = more stable detection, lower = faster updates (trade-off between latency and stability)",
+        description="Samples between analysis frames (default 512 = 10.7ms at 48kHz). Lower = faster response but more CPU (256=5.3ms, 512=10.7ms, 1024=21.3ms). Must be <= buffer size.",
     )
 
     # Processing settings
     fft_size: int = Field(
-        default=2048,
+        default=4096,
         ge=256,
         le=8192,
-        description="FFT size for spectral analysis - larger = better frequency resolution (critical for distinguishing low frequencies, e.g., 16Hz organ from 20Hz)",
+        description="FFT size for spectral analysis (default 4096 = 11.7Hz resolution at 48kHz). Larger = better bass resolution (2048=23Hz, 4096=11.7Hz, 8192=5.9Hz). Minimal CPU impact.",
     )
 
     # Pitch detection settings
@@ -89,17 +90,17 @@ class PitchlyConfig(BaseModel):
     )
 
     pitch_tolerance: float = Field(
-        default=0.8,
+        default=0.15,
         ge=0.0,
         le=1.0,
-        description="YIN tolerance (0.0-1.0) - controls pitch detection strictness. 0.8 is permissive (detects all pitched sounds), 0.2 is strict (only clear pitches)",
+        description="YIN tolerance (0.0-1.0) - controls pitch detection strictness. 0.15 is optimal (detects fundamental accurately), 0.8 is too permissive (catches harmonics), 0.05 is too strict (misses weak signals)",
     )
 
     pitch_min_confidence: float = Field(
-        default=0.1,
+        default=0.2,
         ge=0.0,
         le=1.0,
-        description="Minimum confidence threshold - 0.1 is low (detects quiet/weak pitches, good for tuning), 0.5+ is strict (only strong clear pitches)",
+        description="Minimum confidence threshold - 0.2 is balanced (detects clean pitches, rejects noise), 0.1 is too low (accepts harmonics/noise), 0.5+ is strict (misses weak but valid signals)",
     )
 
     use_pyin_fallback: bool = Field(
