@@ -17,7 +17,7 @@ format:
 	uv run ruff check --fix .
 
 install:
-	uv sync --upgrade --all-extras --all-groups
+	uv sync --upgrade --all-extras --all-groups --prerelease=allow
 
 tests:
 	uv run pytest -v --xfail-tb
