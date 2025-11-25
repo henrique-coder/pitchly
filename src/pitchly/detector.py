@@ -236,10 +236,34 @@ class PitchlyDetector:
             )
             conf_valid = validate_confidence(raw_confidence, self._config.pitch_min_confidence)
 
+            # Additional harmonic rejection: if spectral centroid is much lower than detected frequency,
+            # likely detecting a harmonic instead of fundamental
             if freq_valid and conf_valid:
-                frequency = validated_freq
-                confidence = raw_confidence
-                voiced = True
+                spectral_centroid = np.sum(freqs * spectrum) / max(np.sum(spectrum), 1e-10)
+
+                # If detected frequency is more than 2x the spectral centroid, probably a harmonic
+                # This catches cases like detecting 1320Hz when the fundamental is 440Hz
+                if spectral_centroid > 100 and raw_frequency > spectral_centroid * 2.2:
+                    # Try subharmonics (divide by 2, 3, 4)
+                    for divisor in [2, 3, 4, 5]:
+                        subharmonic = raw_frequency / divisor
+                        if self._config.freq_min <= subharmonic <= self._config.freq_max:
+                            # Check if subharmonic is closer to spectral centroid
+                            if abs(subharmonic - spectral_centroid) < abs(raw_frequency - spectral_centroid):
+                                frequency = subharmonic
+                                confidence = raw_confidence * 0.9  # Slightly reduce confidence
+                                voiced = True
+                                break
+                    else:
+                        # No good subharmonic found, use original
+                        frequency = validated_freq
+                        confidence = raw_confidence
+                        voiced = True
+                else:
+                    # Frequency looks good
+                    frequency = validated_freq
+                    confidence = raw_confidence
+                    voiced = True
 
         # Fallback to pYIN if YIN failed AND pYIN is enabled
         if not voiced and self._config.use_pyin_fallback:
