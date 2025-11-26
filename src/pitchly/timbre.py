@@ -22,28 +22,14 @@ def extract_timbre_features(
     freqs: NDArray,
     sample_rate: int,
 ) -> TimbreFeatures:
-    """
-    Extract timbral characteristics
-
-    Args:
-        audio_frame: Audio samples
-        spectrum: Magnitude spectrum
-        freqs: Frequency bins
-        sample_rate: Audio sample rate
-
-    Returns:
-        TimbreFeatures: Timbral characteristics
-    """
+    """Extract timbral characteristics"""
     roughness = 0.0
 
-    # Calculate roughness (sensory dissonance from close frequencies)
     with suppress(Exception):
-        # Only check first 100 bins for performance
         for i in range(min(len(spectrum) - 1, 100)):
             for j in range(i + 1, min(i + 10, len(spectrum))):
                 freq_diff = freqs[j] - freqs[i]
 
-                # Critical band roughness (20-240 Hz difference)
                 if 0 < freq_diff < 240:
                     dissonance = np.exp(-3.5 * freq_diff / 100) * spectrum[i] * spectrum[j]
                     if not np.isnan(dissonance):
@@ -51,7 +37,7 @@ def extract_timbre_features(
 
     roughness = safe_float(roughness)
 
-    # MFCC (Mel-frequency cepstral coefficients)
+    # MFCC
     mfcc = [0.0] * 13
     with suppress(Exception):
         mel_spectrum = feature.melspectrogram(y=audio_frame, sr=sample_rate, n_mels=13)
@@ -59,14 +45,14 @@ def extract_timbre_features(
         if mfcc_result.shape[1] > 0:
             mfcc = safe_array(mfcc_result[:, 0])
 
-    # Chroma (pitch class distribution)
+    # Chroma
     chroma = [0.0] * 12
     with suppress(Exception):
         chroma_result = feature.chroma_stft(y=audio_frame, sr=sample_rate)
         if chroma_result.shape[1] > 0:
             chroma = safe_array(chroma_result[:, 0])
 
-    # Spectral contrast (peak valley difference across frequency bands)
+    # Spectral contrast
     contrast = [0.0] * 7
     with suppress(Exception):
         contrast_result = feature.spectral_contrast(y=audio_frame, sr=sample_rate)
