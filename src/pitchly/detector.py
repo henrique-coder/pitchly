@@ -1,4 +1,4 @@
-"""Main detector implementation"""
+"""Main detector implementation - captures raw audio without any filters"""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from warnings import filterwarnings
 
 from aubio import onset, pitch, tempo
-from librosa import pyin
 import numpy as np
 from scipy.fft import rfft, rfftfreq
 from scipy.signal import get_window
@@ -24,60 +23,50 @@ from pitchly.harmonic import create_empty_harmonic, extract_harmonic_features
 from pitchly.spectral import create_empty_spectral, extract_spectral_features
 from pitchly.timbre import create_empty_timbre, extract_timbre_features
 from pitchly.types import AudioDetection, FeatureFlags
-from pitchly.utils import safe_division, safe_float, safe_log2, validate_confidence, validate_frequency
+from pitchly.utils import safe_division, safe_float, safe_log2
 
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
 
-# Suppress warnings
 filterwarnings("ignore")
 
-# Global shutdown event for signal handling
 _shutdown_event = Event()
 
 
 def _signal_handler(signum: int, frame) -> None:
-    """Handle shutdown signals gracefully"""
+    """Handle shutdown signals"""
     _shutdown_event.set()
     sys.exit(0)
 
 
-# Register signal handlers
 signal.signal(signal.SIGINT, _signal_handler)
 signal.signal(signal.SIGTERM, _signal_handler)
 
 
 class PitchlyDetector:
     """
-    Ultra-optimized real-time audio quality detector with Pydantic-validated configuration
+    Real-time audio detector - captures exactly what the microphone hears.
 
-    This detector provides real-time audio analysis with:
-    - Precise frequency detection (20Hz-8000Hz validated range)
-    - Configurable feature extraction (enable only what you need)
-    - Low latency processing (~5-15ms with default settings)
-    - Thread-safe architecture with graceful shutdown handling
-    - Musical tuning reference support (configurable A4 pitch)
-    - Comprehensive audio quality metrics
+    No filtering, no limits, no noise reduction - pure raw audio analysis.
+    Returns the exact frequency detected at the moment of analysis.
 
-    Default Configuration:
-    - 48kHz sample rate (professional audio quality)
-    - 1024 sample hop length (~21ms updates)
-    - 2048 FFT size (~0.5Hz frequency resolution)
-    - YIN pitch algorithm (most accurate)
-    - Low confidence threshold (0.1) to detect all sounds
-    - Large buffer (93ms) for stable detection
+    The detector uses the YIN algorithm for pitch detection, optimized for
+    maximum quality. All filtering/limiting should be done by the end user.
+
+    Attributes:
+        is_running: True if the detector is actively listening
+        config: Current PitchlyConfig configuration
 
     Example:
-        >>> from pitchly import PitchlyDetector, PitchlyConfig, FeatureFlags
-        >>> # Use defaults (all features, high quality)
+        >>> from pitchly import PitchlyDetector
+        >>>
         >>> detector = PitchlyDetector()
         >>> detector.listen()
         >>> audio = detector.analyze()
-        >>> print(f"Frequency: {audio.frequency:.1f}Hz")
-        >>> # Custom configuration (basic features only, fastest)
-        >>> config = PitchlyConfig(features=FeatureFlags.BASIC)
-        >>> detector = PitchlyDetector(config)
+        >>> if audio.frequency is not None:
+        ...     print(f"Frequency: {audio.frequency:.1f}Hz")
+        >>> detector.stop()
     """
 
     __slots__ = (
@@ -97,32 +86,15 @@ class PitchlyDetector:
 
     def __init__(self, config: PitchlyConfig | None = None) -> None:
         """
-        Initialize the detector with Pydantic-validated configuration
-
-        The detector initializes the audio stream immediately and blocks until
-        the microphone is ready. This ensures all subsequent operations have
-        a working audio input.
+        Initialize detector with optional configuration.
 
         Args:
-            config: PitchlyConfig instance with validated settings.
-                   If None, uses optimized defaults (48kHz, 1024 hop, YIN algorithm).
-
-        Raises:
-            ValidationError: If config values are invalid (handled by Pydantic)
-            OSError: If microphone cannot be opened
-
-        Example:
-            >>> config = PitchlyConfig(
-            ...     sample_rate=48000,
-            ...     pitch_min_confidence=0.1,  # Detect all sounds
-            ...     features=FeatureFlags.BASIC | FeatureFlags.TIMBRE,
-            ... )
-            >>> detector = PitchlyDetector(config)
+            config: PitchlyConfig instance. If None, uses optimized defaults.
         """
         self._config = config or PitchlyConfig()
         self._buffer_samples = int(self._config.buffer_duration * self._config.sample_rate)
 
-        # Initialize aubio processors
+        # Initialize aubio pitch detector with maximum quality settings
         self._aubio_pitch = pitch(
             self._config.pitch_algorithm,
             self._config.fft_size,
@@ -159,7 +131,7 @@ class PitchlyDetector:
         self._lock = Lock()
         self._listening = False
 
-        # Initialize stream immediately and wait until ready
+        # Initialize stream - raw audio capture
         self._stream = InputStream(
             samplerate=self._config.sample_rate,
             channels=1,
@@ -168,11 +140,10 @@ class PitchlyDetector:
             dtype="float32",
         )
 
-        # Register cleanup
         atexit.register(self.stop)
 
     def _audio_callback(self, indata: NDArray, frames: int, time_info, status) -> None:
-        """Audio input callback - optimized for minimal latency"""
+        """Audio callback - stores raw audio without any processing"""
         if self._shutdown_event.is_set():
             raise KeyboardInterrupt
 
@@ -181,23 +152,28 @@ class PitchlyDetector:
             self._audio_buffer[-frames:] = indata.flatten()
 
     def _process_current_audio(self) -> AudioDetection:
-        """Process audio buffer and return analysis"""
-        # Get latest audio chunk
+        """Process current audio buffer and return raw analysis"""
         with self._lock:
-            buffer_copy = self._audio_buffer[-self._config.hop_length :].copy()
+            # Use full buffer for analysis
+            buffer_copy = self._audio_buffer.copy()
+            # Use hop_length chunk for pitch detection
+            pitch_frame = self._audio_buffer[-self._config.hop_length :].copy()
 
-        # Check if silent
-        if len(buffer_copy) == 0 or np.max(np.abs(buffer_copy)) < 1e-10:
+        # Check for complete silence (no signal at all)
+        max_amplitude = np.max(np.abs(buffer_copy))
+        if len(buffer_copy) == 0 or max_amplitude < 1e-10:
             return self._create_silent_detection()
 
-        # Apply window and compute spectrum
-        windowed = buffer_copy * get_window("hann", len(buffer_copy))
+        # Compute spectrum for analysis using larger window
+        analysis_size = min(len(buffer_copy), self._config.fft_size)
+        analysis_window = buffer_copy[-analysis_size:]
+        windowed = analysis_window * get_window("hann", len(analysis_window))
         spectrum = np.abs(rfft(windowed, n=self._config.fft_size))
         freqs = rfftfreq(self._config.fft_size, 1 / self._config.sample_rate)
 
-        # === CORE ENERGY METRICS (always computed) ===
+        # === RAW ENERGY METRICS ===
         rms_energy = safe_float(np.sqrt(np.mean(buffer_copy**2)))
-        peak_amplitude = safe_float(np.max(np.abs(buffer_copy)))
+        peak_amplitude = safe_float(max_amplitude)
         dynamic_range = safe_float(safe_division(peak_amplitude, rms_energy))
 
         noise_floor = np.percentile(spectrum, 20)
@@ -205,107 +181,56 @@ class PitchlyDetector:
 
         # Zero crossing rate
         zero_crossings = safe_float(np.sum(np.diff(np.sign(buffer_copy)) != 0) / len(buffer_copy))
-        zero_crossings = min(zero_crossings, 1.0)
 
-        # === PITCH DETECTION (core feature) ===
+        # === RAW PITCH DETECTION ===
         autocorr_peak = 0.0
         periodicity = 0.0
-        frequency = 0.0
+        frequency: float | None = None
         confidence = 0.0
-        voiced = False
 
-        # Autocorrelation for periodicity
+        # Autocorrelation for periodicity measure
         with suppress(Exception):
-            autocorr = np.correlate(buffer_copy, buffer_copy, mode="full")
+            autocorr = np.correlate(analysis_window, analysis_window, mode="full")
             autocorr = autocorr[len(autocorr) // 2 :]
-            if len(autocorr) > 1:
-                autocorr_peak = min(safe_float(np.max(autocorr[1:50]) / max(autocorr[0], 1e-10)), 1.0)
-                periodicity = autocorr_peak
+            if len(autocorr) > 1 and autocorr[0] > 1e-10:
+                autocorr_peak = safe_float(np.max(autocorr[1:]) / autocorr[0])
+                periodicity = min(autocorr_peak, 1.0)
 
-        # Aubio YIN pitch detection
+        # Aubio pitch detection - raw output
         with suppress(Exception):
-            aubio_frame = buffer_copy.astype(np.float32)
+            aubio_frame = pitch_frame.astype(np.float32)
             raw_frequency = safe_float(self._aubio_pitch(aubio_frame)[0])
-            raw_confidence = min(safe_float(self._aubio_pitch.get_confidence()), 1.0)
+            raw_confidence = safe_float(self._aubio_pitch.get_confidence())
 
-            # Validate frequency and confidence
-            validated_freq, freq_valid = validate_frequency(
-                raw_frequency,
-                self._config.freq_min,
-                self._config.freq_max,
+            # Validate: aubio returns 0 or sample_rate when no pitch found
+            # Only return frequency if it's a valid detection
+            nyquist = self._config.sample_rate / 2
+            is_valid = (
+                raw_frequency > 0 and raw_frequency < nyquist and not np.isnan(raw_frequency) and not np.isinf(raw_frequency)
             )
-            conf_valid = validate_confidence(raw_confidence, self._config.pitch_min_confidence)
 
-            # Additional harmonic rejection: if spectral centroid is much lower than detected frequency,
-            # likely detecting a harmonic instead of fundamental
-            if freq_valid and conf_valid:
-                spectral_centroid = np.sum(freqs * spectrum) / max(np.sum(spectrum), 1e-10)
+            if is_valid:
+                frequency = raw_frequency
+                confidence = min(max(raw_confidence, 0.0), 1.0)
+            else:
+                # Invalid frequency - return None
+                frequency = None
+                confidence = 0.0
 
-                # If detected frequency is more than 2x the spectral centroid, probably a harmonic
-                # This catches cases like detecting 1320Hz when the fundamental is 440Hz
-                if spectral_centroid > 100 and raw_frequency > spectral_centroid * 2.2:
-                    # Try subharmonics (divide by 2, 3, 4)
-                    for divisor in [2, 3, 4, 5]:
-                        subharmonic = raw_frequency / divisor
-                        if self._config.freq_min <= subharmonic <= self._config.freq_max:
-                            # Check if subharmonic is closer to spectral centroid
-                            if abs(subharmonic - spectral_centroid) < abs(raw_frequency - spectral_centroid):
-                                frequency = subharmonic
-                                confidence = raw_confidence * 0.9  # Slightly reduce confidence
-                                voiced = True
-                                break
-                    else:
-                        # No good subharmonic found, use original
-                        frequency = validated_freq
-                        confidence = raw_confidence
-                        voiced = True
-                else:
-                    # Frequency looks good
-                    frequency = validated_freq
-                    confidence = raw_confidence
-                    voiced = True
-
-        # Fallback to pYIN if YIN failed AND pYIN is enabled
-        if not voiced and self._config.use_pyin_fallback:
-            with suppress(Exception):
-                pyin_freqs, voiced_flag, voiced_probs = pyin(
-                    buffer_copy,
-                    fmin=self._config.freq_min,
-                    fmax=self._config.freq_max,
-                    sr=self._config.sample_rate,
-                )
-
-                if len(pyin_freqs) > 0 and not np.isnan(pyin_freqs[-1]):
-                    raw_frequency = safe_float(pyin_freqs[-1])
-                    raw_confidence = safe_float(voiced_probs[-1] if len(voiced_probs) > 0 else 0.5)
-
-                    # Validate pYIN results
-                    validated_freq, freq_valid = validate_frequency(
-                        raw_frequency,
-                        self._config.freq_min,
-                        self._config.freq_max,
-                    )
-                    conf_valid = validate_confidence(raw_confidence, self._config.pitch_min_confidence)
-
-                    if freq_valid and conf_valid:
-                        frequency = validated_freq
-                        confidence = min(raw_confidence, 1.0)
-                        voiced = bool(voiced_flag[-1]) if len(voiced_flag) > 0 else False
-
-        # === OPTIONAL FEATURES (computed based on config) ===
+        # === OPTIONAL FEATURES ===
 
         # Spectral features
         spectral_features = None
         if FeatureFlags.SPECTRAL in self._config.features:
             spectral_features = extract_spectral_features(spectrum, freqs)
 
-        # Harmonic features
+        # Harmonic features (only if frequency was detected)
         harmonic_features = None
         if FeatureFlags.HARMONIC in self._config.features:
             harmonic_features = extract_harmonic_features(
                 spectrum,
                 freqs,
-                frequency,
+                frequency if frequency is not None else 0.0,
                 self._config.sample_rate,
                 self._config.num_harmonics,
             )
@@ -323,7 +248,7 @@ class PitchlyDetector:
         timbre_features = None
         if FeatureFlags.TIMBRE in self._config.features:
             timbre_features = extract_timbre_features(
-                buffer_copy,
+                analysis_window,
                 spectrum,
                 freqs,
                 self._config.sample_rate,
@@ -335,7 +260,7 @@ class PitchlyDetector:
 
         if FeatureFlags.RHYTHM in self._config.features and self._aubio_onset and self._aubio_tempo:
             with suppress(Exception):
-                aubio_frame = buffer_copy.astype(np.float32)
+                aubio_frame = pitch_frame.astype(np.float32)
                 onset_strength = safe_float(self._aubio_onset(aubio_frame)[0])
 
             with suppress(Exception):
@@ -346,7 +271,6 @@ class PitchlyDetector:
             timestamp=monotonic(),
             frequency=frequency,
             confidence=confidence,
-            voiced=voiced,
             rms_energy=rms_energy,
             peak_amplitude=peak_amplitude,
             dynamic_range=dynamic_range,
@@ -363,12 +287,11 @@ class PitchlyDetector:
         )
 
     def _create_silent_detection(self) -> AudioDetection:
-        """Create detection for silent audio"""
+        """Create detection for complete silence (no signal)"""
         return AudioDetection(
             timestamp=monotonic(),
-            frequency=0.0,
+            frequency=None,
             confidence=0.0,
-            voiced=False,
             rms_energy=0.0,
             peak_amplitude=0.0,
             dynamic_range=0.0,
@@ -387,7 +310,11 @@ class PitchlyDetector:
         )
 
     def listen(self) -> None:
-        """Start listening to microphone and capturing audio"""
+        """
+        Start listening to microphone.
+
+        Must be called before analyze(). Safe to call multiple times.
+        """
         if self._listening or not self._stream:
             return
 
@@ -396,7 +323,11 @@ class PitchlyDetector:
         self._running = True
 
     def stop(self) -> None:
-        """Stop microphone capture and cleanup"""
+        """
+        Stop microphone capture and cleanup resources.
+
+        Safe to call multiple times.
+        """
         if not self._listening:
             return
 
@@ -411,41 +342,17 @@ class PitchlyDetector:
 
     def analyze(self) -> AudioDetection:
         """
-        Analyze current audio buffer and return comprehensive detection results
+        Analyze current audio and return detection results.
 
-        This performs ultra-fast analysis on the most recent audio chunk captured
-        by the microphone. Processing time is typically 5-15ms with default settings
-        (faster with fewer features enabled).
-
-        The method extracts:
-        - Core metrics: frequency, confidence, energy (always)
-        - Optional features: spectral, harmonic, envelope, timbre, rhythm
-          (controlled by config.features flag)
-
-        All frequency detections are validated against config.freq_min and freq_max
-        to prevent spurious detections (like 96kHz jumps).
+        Returns exactly what the microphone captures - no filtering, no limits.
+        frequency will be None if no valid pitch was detected.
 
         Returns:
-            AudioDetection: Pydantic-validated model with all extracted features.
-                           Optional features will be None if not enabled.
+            AudioDetection: Complete raw analysis of current audio moment
 
         Raises:
-            RuntimeError: If not listening to microphone (call .listen() first)
-            KeyboardInterrupt: If shutdown signal received (Ctrl+C, SIGTERM)
-
-        Example:
-            >>> detector.listen()
-            >>> audio = detector.analyze()
-            >>> # Core features (always available)
-            >>> print(f"Frequency: {audio.frequency:.1f}Hz")
-            >>> print(f"Confidence: {audio.confidence:.2f}")
-            >>> print(f"Voiced: {audio.voiced}")
-            >>> print(f"Energy: {audio.rms_energy:.3f}")
-            >>> # Optional features (check if enabled)
-            >>> if audio.spectral:
-            ...     print(f"Brightness: {audio.spectral.brightness:.2f}")
-            >>> if audio.timbre:
-            ...     print(f"MFCC: {audio.timbre.mfcc[:5]}")
+            RuntimeError: If not listening (call listen() first)
+            KeyboardInterrupt: If shutdown signal received
         """
         if not self._listening:
             raise RuntimeError("Not listening. Call listen() first.")
@@ -458,24 +365,24 @@ class PitchlyDetector:
 
     @property
     def is_running(self) -> bool:
-        """Check if detector is actively running"""
+        """True if detector is actively listening to microphone"""
         return self._running
 
     @property
     def config(self) -> PitchlyConfig:
-        """Get current configuration"""
+        """Current detector configuration"""
         return self._config
 
     def __enter__(self) -> PitchlyDetector:
-        """Context manager entry"""
+        """Context manager entry - starts listening"""
         self.listen()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        """Context manager exit"""
+        """Context manager exit - stops and cleans up"""
         self.stop()
 
     def __del__(self) -> None:
-        """Cleanup on deletion"""
+        """Destructor - ensures cleanup"""
         with suppress(Exception):
             self.stop()
